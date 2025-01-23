@@ -58,77 +58,72 @@ def setup(num_sites, lsp, mass, l0):
     return fock_indices, pos_indices, fermi_num, basis_change_mat, h_free, h_elec
 
 
-def position_states_as_fock_state_sums(pos_indices, fermi_num):
-    pos_indices = jnp.asarray(pos_indices)
-    num_sites = fermi_num.shape[0]
-    subdim = pos_indices.shape[0]
-
-    fermi_num_0 = fermi_num[0].todense()
-    fermi_num_0_compl = (-fermi_num_0).at[jnp.arange(subdim), jnp.arange(subdim)].add(1.)
-
-    @jax.jit
-    def occupied_0():
-        return fermi_num_0
-
-    @jax.jit
-    def unoccupied_0():
-        return fermi_num_0_compl
-
-    @jax.jit
+@jax.jit
+def _position_as_fock(idx, fermi_num, proj_init):
     def occupied(isite, proj):
         return fermi_num[isite] @ proj
 
-    @jax.jit
     def unoccupied(isite, proj):
-        compl = fermi_num[isite] @ proj
-        return proj - compl
+        return proj - fermi_num[isite] @ proj
 
-    @jax.jit
-    def _position_as_fock(idx):
-        bidx = (idx >> jnp.arange(num_sites)) % 2
+    bidx = (idx >> jnp.arange(fermi_num.shape[0])) % 2
+    proj = proj_init[bidx[0]]
+    for isite in range(1, fermi_num.shape[0]):
         proj = jax.lax.cond(
-            jnp.equal(bidx[0], 1),
-            occupied_0,
-            unoccupied_0
+            jnp.equal(bidx[isite], 1),
+            occupied,
+            unoccupied,
+            isite,
+            proj
         )
-        for isite in range(1, num_sites):
-            proj = jax.lax.cond(
-                jnp.equal(bidx[isite], 1),
-                occupied,
-                unoccupied,
-                isite,
-                proj
-            )
 
-        # return jnp.linalg.eigh(proj)[1][:, -1]
+    return jnp.linalg.eigh(proj)[1][:, -1]
 
-        absvals = jnp.sqrt(jnp.diagonal(proj).real)
-        ikey = jax.lax.while_loop(
-            lambda i: jnp.isclose(absvals[i], 0.),
-            lambda i: i + 1,
-            0
-        )
-        return absvals * jnp.exp(1.j * jnp.angle(proj[:, ikey]))
+    # absvals = jnp.sqrt(jnp.diagonal(proj).real)
+    # ikey = jax.lax.while_loop(
+    #     lambda i: jnp.isclose(absvals[i], 0.),
+    #     lambda i: i + 1,
+    #     0
+    # )
+    # return absvals * jnp.exp(1.j * jnp.angle(proj[:, ikey]))
+
+
+# _position_as_fock_v = jax.jit(jax.vmap(_position_as_fock, in_axes=(0, None, None), out_axes=1))
+
+
+def position_states_as_fock_state_sums(pos_indices, fermi_num):
+    pos_indices = jnp.asarray(pos_indices)
+    subdim = pos_indices.shape[0]
+
+    proj_init = jnp.array([
+        jnp.eye(subdim, dtype=fermi_num.dtype) - fermi_num[0].todense(),
+        fermi_num[0].todense()
+    ])
 
     @jax.jit
     def _position_as_fock_i(icol, mat):
-        return mat.at[:, icol].set(_position_as_fock(pos_indices[icol]))
+        return mat.at[:, icol].set(_position_as_fock(pos_indices[icol], fermi_num, proj_init))
 
-    return jax.lax.fori_loop(0, subdim, _position_as_fock_i,
-                             jnp.empty((subdim, subdim), dtype=np.complex128))
+    mat_init = jnp.empty((subdim, subdim), dtype=fermi_num.dtype)
+    return jax.lax.fori_loop(0, subdim, _position_as_fock_i, mat_init)
 
-    # _position_as_fock_v = jax.vmap(_position_as_fock, out_axes=1)
+    # batch_size = 32
+    # num_batches = subdim // batch_size + int(subdim % batch_size != 0)
+    # batched_subdim = batch_size * num_batches
+    # pos_indices_batched = jnp.reshape(
+    #     jnp.concatenate([
+    #         pos_indices,
+    #         jnp.zeros(batched_subdim - subdim, dtype=pos_indices.dtype)
+    #     ]),
+    #     (num_batches, batch_size)
+    # )
 
-    # return _position_as_fock_v(pos_indices)
-
-    # batch_size = 128
-    # num_batches = subdim // batch_size - 1
-    # mat = jnp.empty((subdim, subdim), dtype=np.complex128)
-    # for ibatch in range(num_batches):
-    #     start = batch_size * ibatch
-    #     end = batch_size * (ibatch + 1)
-    #     mat = mat.at[:, start:end].set(
-    #         _position_as_fock_v(pos_indices[start:end])
+    # @jax.jit
+    # def _position_as_fock_vi(ibatch, mat):
+    #     return mat.at[:, ibatch].set(
+    #         _position_as_fock_v(pos_indices_batched[ibatch], fermi_num, proj_init)
     #     )
-    # start = batch_size * num_batches
-    # return mat.at[:, start:].set(_position_as_fock_v(pos_indices[start:]))
+
+    # mat_init = jnp.empty((subdim, num_batches, batch_size), dtype=fermi_num.dtype)
+    # mat = jax.lax.fori_loop(0, num_batches, _position_as_fock_vi, mat_init)
+    # return mat.reshape((subdim, batched_subdim))[:, :subdim]
