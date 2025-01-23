@@ -8,10 +8,10 @@ from .sparse import dagger, jw_annihilator_spo, ab_to_phi_sparse
 jax.config.update('jax_enable_x64', True)
 
 
-def setup(num_sites, mu, l0):
+def setup(num_sites, lsp, mass, l0):
     half_lat = num_sites // 2
     hdim = 2 ** num_sites
-    rapidity, wavenumber = get_rapidity(num_sites, mu, with_wn=True)
+    rapidity, wavenumber = get_rapidity(num_sites, lsp, mass, with_wn=True)
 
     print('Identifying Fock-space physical state indices')
     fock_config = (jnp.arange(hdim)[:, None] >> jnp.arange(num_sites)[None, :]) % 2
@@ -22,7 +22,7 @@ def setup(num_sites, mu, l0):
 
     print('Free Hamiltonian')
     occupancy = fock_config[fock_indices]
-    energy = mu * np.cosh(rapidity)
+    energy = mass * np.cosh(rapidity)
     energy = np.tile(energy, 2)
     h_free = jnp.sum(energy[None, :] * occupancy, axis=1)
 
